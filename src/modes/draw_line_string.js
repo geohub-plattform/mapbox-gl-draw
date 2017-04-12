@@ -7,22 +7,55 @@ const createVertex = require('../lib/create_vertex');
 const snapTo = require('../lib/snap_to');
 
 
-module.exports = function(ctx) {
-  const line = new LineString(ctx, {
-    type: Constants.geojsonTypes.FEATURE,
-    properties: {},
-    geometry: {
-      type: Constants.geojsonTypes.LINE_STRING,
-      coordinates: []
+module.exports = function(ctx, opts) {
+  opts = opts || {};
+  const featureId = opts.featureId;
+
+  let line, currentVertexPosition;
+  let direction = 'forward';
+  if (featureId) {
+    line = ctx.store.get(featureId);
+    if (!line) {
+      throw new Error('Could not find a feature with the provided featureId');
     }
-  });
-  let currentVertexPosition = 0;
-  let heardMouseMove = false;
+    let from = opts.from;
+    if (from && from.type === 'Feature' && from.geometry && from.geometry.type === 'Point') {
+      from = from.geometry;
+    }
+    if (from && from.type === 'Point' && from.coordinates && from.coordinates.length === 2) {
+      from = from.coordinates;
+    }
+    if (!from || !Array.isArray(from)) {
+      throw new Error('Please use the `from` property to indicate which point to continue the line from');
+    }
+    const lastCoord = line.coordinates.length - 1;
+    if (line.coordinates[lastCoord][0] === from[0] && line.coordinates[lastCoord][1] === from[1]) {
+      currentVertexPosition = lastCoord + 1;
+      // add one new coordinate to continue from
+      line.addCoordinate(currentVertexPosition, ...line.coordinates[lastCoord]);
+    } else if (line.coordinates[0][0] === from[0] && line.coordinates[0][1] === from[1]) {
+      direction = 'backwards';
+      currentVertexPosition = 0;
+      // add one new coordinate to continue from
+      line.addCoordinate(currentVertexPosition, ...line.coordinates[0]);
+    } else {
+      throw new Error('`from` should match the point at either the start or the end of the provided LineString');
+    }
+  } else {
+    line = new LineString(ctx, {
+      type: Constants.geojsonTypes.FEATURE,
+      properties: {},
+      geometry: {
+        type: Constants.geojsonTypes.LINE_STRING,
+        coordinates: []
+      }
+    });
+    currentVertexPosition = 0;
+    ctx.store.add(line);
+  }
 
   if (ctx._test) ctx._test.line = line;
-
-  ctx.store.add(line);
-
+  let heardMouseMove = false;
   let snapClickPoint;
 
   return {
@@ -31,6 +64,7 @@ module.exports = function(ctx) {
       doubleClickZoom.disable(ctx);
       ctx.ui.queueMapClasses({ mouse: Constants.cursors.ADD });
       ctx.ui.setActiveButton(Constants.types.LINE);
+
       this.on('mousemove', CommonSelectors.true, (e) => {
         let evt = e;
 
@@ -52,12 +86,17 @@ module.exports = function(ctx) {
 
       function clickAnywhere(e) {
         const evt = snapClickPoint || e;
-        if (currentVertexPosition > 0 && isEventAtCoordinates(evt, line.coordinates[currentVertexPosition - 1])) {
+        if (currentVertexPosition > 0 && isEventAtCoordinates(evt, line.coordinates[currentVertexPosition - 1]) ||
+          direction === 'backwards' && isEventAtCoordinates(evt, line.coordinates[currentVertexPosition + 1])) {
           return ctx.events.changeMode(Constants.modes.SIMPLE_SELECT, { featureIds: [line.id] });
         }
         ctx.ui.queueMapClasses({ mouse: Constants.cursors.ADD });
         line.updateCoordinate(currentVertexPosition, evt.lngLat.lng, evt.lngLat.lat);
-        currentVertexPosition++;
+        if (direction === 'forward') {
+          currentVertexPosition++;
+        } else {
+          line.addCoordinate(0, evt.lngLat.lng, evt.lngLat.lat);
+        }
       }
       function clickOnVertex() {
         return ctx.events.changeMode(Constants.modes.SIMPLE_SELECT, { featureIds: [line.id] });
@@ -106,7 +145,12 @@ module.exports = function(ctx) {
       geojson.properties.meta = Constants.meta.FEATURE;
 
       if (geojson.geometry.coordinates.length >= 3) {
-        callback(createVertex(line.id, geojson.geometry.coordinates[geojson.geometry.coordinates.length - 2], `${geojson.geometry.coordinates.length - 2}`, false));
+        callback(createVertex(
+          line.id,
+          geojson.geometry.coordinates[direction === 'forward' ? geojson.geometry.coordinates.length - 2 : 1],
+          `${direction === 'forward' ? geojson.geometry.coordinates.length - 2 : 1}`,
+          false
+        ));
       }
 
       callback(geojson);
