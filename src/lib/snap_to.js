@@ -1,5 +1,4 @@
 const StringSet = require('../lib/string_set');
-const coordEach = require('@turf/meta').coordEach;
 const turf = require('@turf/turf');
 const cheapRuler = require('cheap-ruler');
 
@@ -13,19 +12,65 @@ function toPointArray(feature) {
   return result;
 }
 
+function toLineStrings(feature) {
+  const result = [];
+  const flat = turf.flatten(feature);
+  turf.geomEach(flat, (geometry) => {
+    result.push(turf.lineString(geometry.coordinates));
+  });
+
+  return result;
+}
+
 
 // All are required
 module.exports = function snapTo(evt, ctx, id) {
   if (ctx.map === null) return [];
 
-  //console.log("---");
+  const line = ctx.store.get(id);
+
   const buffer = 20; // ctx.options.snapBuffer;
   const box = [
     [evt.point.x - buffer, evt.point.y - buffer],
     [evt.point.x + buffer, evt.point.y + buffer]
   ];
 
-  //console.log("Box: ", box);
+  let distanceBox = null;
+  if (line && line.coordinates.length > 1) {
+    const lastLinePoint = line.coordinates[line.coordinates.length - 2];
+    const lastPoint = ctx.map.project(lastLinePoint);
+
+    const extendBox = [
+      [lastPoint.x - buffer, lastPoint.y - buffer],
+      [lastPoint.x + buffer, lastPoint.y + buffer],
+      [evt.point.x - buffer, evt.point.y - buffer],
+      [evt.point.x + buffer, evt.point.y + buffer]
+    ];
+
+    const bboxPoints = [];
+    extendBox.forEach((element) => {
+      const point = ctx.map.unproject(element);
+      bboxPoints.push(turf.point([point.lng, point.lat]));
+    });
+
+    const bbox = turf.bbox(turf.featureCollection(bboxPoints));
+
+    distanceBox = [[bbox[0], bbox[1]], [bbox[2], bbox[1]],
+      [bbox[2], bbox[3]], [bbox[0], bbox[3]], [bbox[0], bbox[1]]];
+/*    distanceBox = [
+      [evt.lngLat.lng, evt.lngLat.lat], [lastLinePoint[0], evt.lngLat.lat],
+      [lastLinePoint[0], lastLinePoint[1]], [evt.lngLat.lng, lastLinePoint[1]],
+      [evt.lngLat.lng, evt.lngLat.lat]
+    ];*/
+
+    const pos1 = ctx.map.project(distanceBox[0]);
+    const pos2 = ctx.map.project(distanceBox[2]);
+    box[0] = [pos1.x, pos1.y];
+    box[1] = [pos2.x, pos2.y];
+  }
+
+  console.log("distanceBox: ", distanceBox);
+  console.log("box: ", box);
 
   //const snapFilter = {layers: ["road-street", "road-service-link-track", "road-path", "road-secondary-tertiary", "road-motorway"]};
   const snapFilter = {layers: ['demodata', 'gl-draw-polygon-stroke-inactive.cold', 'gl-draw-line-inactive.cold', 'gl-draw-point-inactive.cold']};
@@ -52,6 +97,10 @@ module.exports = function snapTo(evt, ctx, id) {
     "type": "FeatureCollection",
     "features": []
   };
+  if (distanceBox) {
+    selectedElements.features.push(turf.lineString(distanceBox));
+    console.log("selected elements: ", selectedElements);
+  }
 
   if (ctx.map.getSource("snap-source") === undefined) {
     console.log("adding snap-source");
@@ -85,10 +134,9 @@ module.exports = function snapTo(evt, ctx, id) {
       ctx.map.addLayer({
         id: "snap-elements",
         source: "snap-elements",
-        type: "circle",
+        type: "line",
         paint: {
-          "circle-color": "#0000ff",
-          "circle-radius": 4
+          "line-color": "#0000ff"
         }
       });
     }
@@ -106,10 +154,12 @@ module.exports = function snapTo(evt, ctx, id) {
       }
       featureIds.add(featureId);
     }
-    const points = toPointArray(feature);
-    points.forEach((point) => {
-      selectedElements.features.push(point);
-    });
+    /*    const points = toPointArray(feature);
+     points.forEach((point) => {
+     selectedElements.features.push(point);
+     });*/
+    const lines = toLineStrings(feature);
+    selectedElements.features.push(...lines);
     return uniqueFeatures.push(feature);
   });
 
@@ -120,10 +170,7 @@ module.exports = function snapTo(evt, ctx, id) {
       "features": []
     });
     if (DEBUG_SNAP) {
-      ctx.map.getSource("snap-elements").setData({
-        "type": "FeatureCollection",
-        "features": []
-      });
+      ctx.map.getSource("snap-elements").setData(selectedElements);
     }
     return evt;
   } else {
