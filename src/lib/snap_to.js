@@ -2,7 +2,7 @@ const StringSet = require('../lib/string_set');
 const turf = require('@turf/turf');
 const cheapRuler = require('cheap-ruler');
 
-const DEBUG_SNAP = false;
+const DEBUG_SNAP = true;
 
 function toPointArray(feature) {
   const result = [];
@@ -22,12 +22,58 @@ function toLineStrings(feature) {
   return result;
 }
 
+function findConnectingLine(startPoint, endPoint, geojson) {
+  let result = null;
+  let features = 0;
+  let coords = 0;
+  console.log("searching startPoint: ", startPoint, " endPoint: ", endPoint);
+  turf.featureEach(geojson, (feature) => {
+    if (!result) {
+
+      features++;
+      let startIndex = -1;
+      let endIndex = -1;
+      turf.coordEach(feature, (coord, index) => {
+        coords++;
+        if (startIndex === -1 && (coord[0] === startPoint[0] && coord[1] === startPoint[1])) {
+          startIndex = index;
+        }
+        if (endIndex === -1 && (coord[0] === endPoint[0] && coord[1] === endPoint[1])) {
+          endIndex = index;
+        }
+        if (startIndex !== -1 && endIndex !== -1 && startIndex !== endIndex) {
+          const resultCoords = [];
+          if (startIndex > endIndex) {
+            const saveIndex = endIndex;
+            endIndex = startIndex;
+            startIndex = saveIndex;
+          }
+          for (let x = startIndex; x < endIndex; x++) {
+            resultCoords.push(feature.geometry.coordinates[x]);
+          }
+          if (resultCoords.length > 1) {
+            result = turf.lineString(resultCoords);
+          }
+        }
+      });
+    }
+  });
+  if (!result) {
+    console.log("not found, feature: ", features, " coords: ", coords);
+  } else {
+    console.log("Found: ", result);
+
+  }
+  return result;
+}
+
 
 // All are required
 module.exports = function snapTo(evt, ctx, id) {
   if (ctx.map === null) return [];
 
   const line = ctx.store.get(id);
+  let lastLinePoint = null;
 
   const buffer = 20; // ctx.options.snapBuffer;
   const box = [
@@ -37,7 +83,8 @@ module.exports = function snapTo(evt, ctx, id) {
 
   let distanceBox = null;
   if (line && line.coordinates.length > 1) {
-    const lastLinePoint = line.coordinates[line.coordinates.length - 2];
+    // todo check rouler.bufferBBox
+    lastLinePoint = line.coordinates[line.coordinates.length - 2];
     const lastPoint = ctx.map.project(lastLinePoint);
 
     const extendBox = [
@@ -57,11 +104,11 @@ module.exports = function snapTo(evt, ctx, id) {
 
     distanceBox = [[bbox[0], bbox[1]], [bbox[2], bbox[1]],
       [bbox[2], bbox[3]], [bbox[0], bbox[3]], [bbox[0], bbox[1]]];
-/*    distanceBox = [
-      [evt.lngLat.lng, evt.lngLat.lat], [lastLinePoint[0], evt.lngLat.lat],
-      [lastLinePoint[0], lastLinePoint[1]], [evt.lngLat.lng, lastLinePoint[1]],
-      [evt.lngLat.lng, evt.lngLat.lat]
-    ];*/
+    /*    distanceBox = [
+     [evt.lngLat.lng, evt.lngLat.lat], [lastLinePoint[0], evt.lngLat.lat],
+     [lastLinePoint[0], lastLinePoint[1]], [evt.lngLat.lng, lastLinePoint[1]],
+     [evt.lngLat.lng, evt.lngLat.lat]
+     ];*/
 
     const pos1 = ctx.map.project(distanceBox[0]);
     const pos2 = ctx.map.project(distanceBox[2]);
@@ -69,8 +116,8 @@ module.exports = function snapTo(evt, ctx, id) {
     box[1] = [pos2.x, pos2.y];
   }
 
-  console.log("distanceBox: ", distanceBox);
-  console.log("box: ", box);
+  //console.log("distanceBox: ", distanceBox);
+  //console.log("box: ", box);
 
   //const snapFilter = {layers: ["road-street", "road-service-link-track", "road-path", "road-secondary-tertiary", "road-motorway"]};
   const snapFilter = {layers: ['demodata', 'gl-draw-polygon-stroke-inactive.cold', 'gl-draw-line-inactive.cold', 'gl-draw-point-inactive.cold']};
@@ -173,10 +220,8 @@ module.exports = function snapTo(evt, ctx, id) {
       ctx.map.getSource("snap-elements").setData(selectedElements);
     }
     return evt;
-  } else {
-    if (DEBUG_SNAP) {
-      ctx.map.getSource("snap-elements").setData(selectedElements);
-    }
+  } else if (DEBUG_SNAP) {
+    ctx.map.getSource("snap-elements").setData(selectedElements);
   }
 
   const closestPoints = function (ruler, coordinates, evtCoords) {
@@ -226,8 +271,8 @@ module.exports = function snapTo(evt, ctx, id) {
         const dist = ruler.distance(singleCoords, evtCoords);
         //console.log("type: ", pointType.type, " dist: ", dist);
         if (dist !== null) {
-          if (closestDistance === null || ((pointType.type === "vertex" && dist < 0.004) ||
-            (dist < closestDistance))) {
+          if ((closestDistance === null || ((pointType.type === "vertex" && dist < 0.004) ||
+            (dist < closestDistance))) && dist < 0.008) {
             feature.distance = dist;
             closestFeature = feature;
             closestCoord = singleCoords;
@@ -242,10 +287,21 @@ module.exports = function snapTo(evt, ctx, id) {
   if (closestDistance !== null) {
     evt.lngLat.lng = closestCoord[0];
     evt.lngLat.lat = closestCoord[1];
+
+    let pointsBetween = null;
+    if (lastLinePoint) {
+      pointsBetween = findConnectingLine(closestCoord, lastLinePoint, selectedElements);
+    }
     evt.point = ctx.map.project(closestCoord);
     evt.snap = true;
     eventPoint.geometry.coordinates = closestCoord;
-    ctx.map.getSource("snap-source").setData(eventPoint);
+    const features = [eventPoint];
+    if (pointsBetween) {
+      features.push(pointsBetween);
+    }
+    ctx.map.getSource("snap-source").setData(turf.featureCollection(features));
+  } else {
+    ctx.map.getSource("snap-source").setData(turf.featureCollection([]));
   }
   return evt;
 };
