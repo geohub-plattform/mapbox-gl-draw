@@ -12,6 +12,7 @@
     ]
   },
   "scripts": {
+    "geohub-test": "tape -r babel-register test/geohub/*.test.js",
     "test": "npm run lint && npm run tape",
     "lint": "eslint --no-eslintrc -c .eslintrc index.js src test",
     "tape": "tape -r ./test/mock-browser.js -r babel-register test/*.test.js",
